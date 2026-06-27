@@ -1,0 +1,67 @@
+# Mapeo de Fases Arquitectónicas a Código Fuente
+
+Este documento detalla la correspondencia exacta entre las fases conceptuales del Diagrama de Flujo de Datos (DFD) y los scripts, clases y archivos del repositorio.
+
+---
+
+### 1. Fase de Extracción y Procesamiento (Ingesta & Transformación Base)
+Esta fase se encarga de leer los archivos crudos en paralelo, validar la integridad de los datos y unir ventas con sus respectivos historiales de estado.
+
+*   **Lectura Paralela Asíncrona:**
+    *   **Archivo:** `beam/beam_pipeline.py`
+    *   **Clase:** `ParallelCSVReaderFn` (hereda de `beam.DoFn`).
+    *   **Explicación:** Implementa un sistema de multithreading en Python con `threading.Lock` y colas (`Queue`) para leer concurrentemente y de forma segura las líneas de los archivos CSV masivos.
+*   **Enrutamiento de Errores (Side Outputs):**
+    *   **Archivo:** `beam/beam_pipeline.py`
+    *   **Clases:** `ValidateSalesFn` y `ValidateLogsFn`.
+    *   **Explicación:** Evalúan reglas de negocio (ej. `amount <= 0`) y utilizan `beam.pvalue.TaggedOutput('rejected', ...)` para desviar los registros anómalos. En la función `run_pipeline`, estos se aplanan y se guardan en el directorio `rejected_sales/` con sufijo `.csv`.
+*   **Lógica de Unión (CoGroupByKey):**
+    *   **Archivo:** `beam/beam_pipeline.py`
+    *   **Función:** `run_pipeline` y `BuildNestedRecordFn`.
+    *   **Explicación:** Utiliza la transformación nativa de Beam `beam.CoGroupByKey()` para agrupar las ventas y logs validados por el `transaction_id`. Luego, `BuildNestedRecordFn` consolida esto en un diccionario anidado por transacción.
+
+---
+
+### 2. Fase de Persistencia Estructurada (Capa Silver)
+Esta fase se encarga de serializar los datos procesados en un formato columnar optimizado, garantizando un contrato de datos estricto.
+
+*   **Definición de Esquema Estricto (PyArrow):**
+    *   **Archivo:** `beam/beam_pipeline.py`
+    *   **Variable:** `SILVER_SCHEMA`.
+    *   **Explicación:** Define un esquema tipado de `pyarrow` (incluyendo `pa.struct` y `pa.list_`) que garantiza matemáticamente la estructura y tipos de datos esperados antes de la persistencia, previniendo esquemas corruptos.
+*   **Mecanismo de Escritura Parquet:**
+    *   **Archivo:** `beam/beam_pipeline.py`
+    *   **Función:** `run_pipeline`.
+    *   **Explicación:** Invoca `beam.io.WriteToParquet` pasando el directorio de destino (`silver_layer/sales_enriched`) y el esquema estricto (`schema=SILVER_SCHEMA`), generando archivos particionados y comprimidos.
+
+---
+
+### 3. Fase de Modelamiento Analítico y Serving (Capa Gold)
+Esta fase construye las tablas de hechos y dimensiones dentro del Data Warehouse, realizando cruces de divisas y garantizando calidad de datos (Data Quality).
+
+*   **Modelos de Transformación dbt:**
+    *   **Archivos:** `dbt_project/models/stg_sales.sql` y `dbt_project/models/fct_sales.sql`.
+    *   **Explicación:** `stg_sales` actúa como vista materializada para extraer limpiamente los atributos JSON provenientes de la capa Silver (`->>`). Luego, `fct_sales` consolida métricas y tiempos de conversión en la tabla de hechos final.
+*   **Archivos Semilla (Referencia de Divisas):**
+    *   **Archivo:** `dbt_project/seeds/ref_exchange_rates.csv`.
+    *   **Explicación:** Proporciona un dataset estático inyectado directamente a PostgreSQL vía `dbt seed` para cruzar monedas locales y estandarizar el campo `amount_usd` en el modelo final.
+*   **Pruebas de Calidad de Datos (Data Quality Tests):**
+    *   **Archivo:** `dbt_project/models/schema.yml`.
+    *   **Explicación:** Declara pruebas estrictas de dbt para `transaction_id` (`unique`, `not_null`) y utiliza el paquete `dbt_expectations` para asegurar que el `amount_usd` siempre sea `>= 0.01`, certificando la limpieza de los datos para consumo analítico.
+
+---
+
+### 4. Capa de Orquestación Transversal
+Esta capa coordina la ejecución secuencial, dependencias y reintentos de todo el flujo de consolidación.
+
+*   **Declaración del DAG y Operadores:**
+    *   **Archivo:** `airflow/dags/global_mart_consolidation_pipeline.py`.
+    *   **Implementaciones clave:**
+        *   `BashOperator` (`task_id='extract_and_transform_silver'`): Invoca la ejecución de Apache Beam localmente en el contenedor.
+        *   `FileSensor` (`task_id='sensor_silver_data'`): Escucha asíncronamente el directorio `silver_layer_path` a la espera de la creación del archivo Parquet.
+        *   `BashOperator` (`task_id='load_parquet_to_postgres'`): Ejecuta el script de carga personalizado hacia PostgreSQL.
+        *   `BashOperator` (`task_id='load_and_model_gold'`): Ejecuta de forma secuencial `dbt deps`, `dbt seed`, `dbt run` y `dbt test` para levantar la capa Gold.
+*   **Flujo de Dependencias (Dependency Flow):**
+    *   **Archivo:** `airflow/dags/global_mart_consolidation_pipeline.py` (Final de la función `create_dag`).
+    *   **Línea de código:** `extract_and_transform_silver >> sensor_silver_data >> load_parquet_to_postgres >> load_and_model_gold`.
+    *   **Explicación:** Define la topología estricta del grafo dirigido acíclico, forzando a Airflow a no iniciar dbt hasta que Beam termine, el archivo Parquet sea detectado y los datos estén físicamente en PostgreSQL.
