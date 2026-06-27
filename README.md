@@ -14,17 +14,9 @@ This project orchestrates a data consolidation pipeline for Global Mart using Ap
 ## Instructions
 
 ### 1. Configuration (.env)
-Ensure you have created a `.env` file at the root of the project to match the Docker network. A template of the necessary variables is:
-```env
-PROJECT_ROOT=/opt/airflow
-BEAM_PIPELINE_PATH=${PROJECT_ROOT}/beam/beam_pipeline.py
-SILVER_LAYER_PATH=${PROJECT_ROOT}/silver_layer
-DBT_PROJECT_PATH=${PROJECT_ROOT}/dbt_project
-DB_HOST=postgres_gold
-DB_PORT=5433
-DB_USER=admin
-DB_PASSWORD=adminpassword
-DB_NAME=supermarket_db
+Simply copy the provided `.env.example` file to create your local environment configuration before starting the services:
+```bash
+cp .env.example .env
 ```
 
 ### 2. Setting up the Services
