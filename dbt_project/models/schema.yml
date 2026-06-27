@@ -1,5 +1,11 @@
 version: 2
 
+sources:
+  - name: silver
+    schema: public
+    tables:
+      - name: sales_enriched
+
 models:
   - name: fct_sales
     columns:
@@ -10,4 +16,4 @@ models:
       - name: amount_usd
         tests:
           - dbt_expectations.expect_column_values_to_be_between:
-              min_value: 0.01 # Umbral estrictamente positivo
+              min_value: 0.01

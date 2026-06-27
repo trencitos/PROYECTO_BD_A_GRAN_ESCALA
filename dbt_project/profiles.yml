@@ -1,0 +1,12 @@
+super_market_dbt:
+  target: dev
+  outputs:
+    dev:
+      type: postgres
+      threads: 4
+      host: "{{ env_var('DB_HOST', 'localhost') }}"
+      port: 5432
+      user: "{{ env_var('DB_USER', 'admin') }}"
+      pass: "{{ env_var('DB_PASSWORD', 'adminpassword') }}"
+      dbname: "{{ env_var('DB_NAME', 'supermarket_db') }}"
+      schema: public
