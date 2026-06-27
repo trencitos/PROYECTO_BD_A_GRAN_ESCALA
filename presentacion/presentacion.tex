@@ -1,0 +1,173 @@
+\documentclass{beamer}
+\usetheme{metropolis}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, shapes.geometric, shapes.multipart}
+\usepackage{fancyvrb} % Minimalist package for code
+
+\title{Sistema de Consolidación de Ventas Omnicanal Super-Market}
+\subtitle{Workshop de Data Engineering - Pitch Técnico}
+\author{Geraldine Cornejo, Javiera Barrales, Rodrigo Flores}
+\institute{Universidad Técnica Federico Santa María}
+\date{Junio 2026}
+
+\begin{document}
+
+\begin{frame}
+    \maketitle
+\end{frame}
+
+\begin{frame}{El Desafío de Negocio}
+    \begin{itemize}
+        \item \textbf{Silos Transaccionales}: Las sucursales generan ventas y logs en sistemas desconectados geográficamente.
+        \item \textbf{Anomalías Financieras}: Ruido en la data como montos negativos, en cero, o nulos, que rompen analíticas (\texttt{amount <= 0}).
+        \item \textbf{Disparidad Cambiaria}: Operaciones mezcladas en monedas locales que dificultan la consolidación de reportes corporativos globales.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}{Visión General de la Arquitectura}
+    \begin{center}
+    \resizebox{\textwidth}{!}{
+        \begin{tikzpicture}[
+            node distance=1.5cm and 2cm,
+            box/.style={rectangle, draw, fill=blue!10, rounded corners, text width=2.5cm, align=center, minimum height=1cm},
+            db/.style={cylinder, draw, shape border rotate=90, aspect=0.25, fill=green!10, text width=2cm, align=center, minimum height=1.5cm},
+            arrow/.style={-{Stealth[scale=1.2]}, thick}
+        ]
+            
+            % Nodes
+            \node[box] (sources) {Sources\\(CSV)};
+            \node[box, right=of sources] (beam) {Apache Beam\\(Ingestión)};
+            \node[db, right=of beam] (silver) {Silver Layer\\(Parquet)};
+            \node[box, right=of silver] (dbt) {dbt\\(Transformación)};
+            \node[db, right=of dbt] (gold) {Gold Layer\\(PostgreSQL)};
+            
+            % Arrows
+            \draw[arrow] (sources) -- (beam);
+            \draw[arrow] (beam) -- node[above] {\small PyArrow} (silver);
+            \draw[arrow] (silver) -- (dbt);
+            \draw[arrow] (dbt) -- node[above] {\small Models} (gold);
+            
+        \end{tikzpicture}
+    }
+    \end{center}
+\end{frame}
+
+\begin{frame}{Fase 1: Ingesta Paralela (Apache Beam)}
+    \begin{itemize}
+        \item \textbf{Escalabilidad Horizontal:} I/O optimizado superando cuellos de botella mediante hilos.
+        \item \textbf{Resiliencia:} Aislamiento de errores financieros a través de Side Outputs, evitando que el flujo principal se detenga.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Código: Ingesta Paralela}
+\begin{Verbatim}[fontsize=\footnotesize]
+class ParallelCSVReaderFn(beam.DoFn):
+    def process(self, file_path: str) -> Iterable[str]:
+        file_queue: Queue = Queue()
+        results: Queue = Queue()
+        lock = threading.Lock()
+
+        def worker() -> None:
+            while not file_queue.empty():
+                with lock: # Bloqueo seguro para multihilo
+                    if file_queue.empty(): break
+                    line = file_queue.get()
+                results.put(line)
+\end{Verbatim}
+\end{frame}
+
+\begin{frame}{Capa Silver - Contratos de Esquema}
+    \begin{itemize}
+        \item \textbf{Sinking Strategy:} Uso de Parquet para almacenamiento columnar eficiente, ideal para Big Data.
+        \item \textbf{Contrato Fuerte:} PyArrow garantiza matemáticamente la estructura anidada de los registros antes de ser persistidos.
+    \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Código: Contrato PyArrow}
+\begin{Verbatim}[fontsize=\scriptsize]
+SILVER_SCHEMA = pa.schema([
+    ('id', pa.string()),
+    ('store', pa.string()),
+    ('financials', pa.struct([
+        ('raw_amount', pa.float64()),
+        ('currency', pa.string())
+    ])),
+    ('status_history', pa.list_(pa.struct([
+        ('status', pa.string()),
+        ('date', pa.timestamp('us'))
+    ])))
+])
+\end{Verbatim}
+\end{frame}
+
+\begin{frame}{Fase 2: Modelado Analítico (dbt)}
+    \begin{itemize}
+        \item \textbf{Business Value:} Generación de KPIs financieros (e.g., \texttt{amount\_usd}, \texttt{is\_active}).
+        \item \textbf{Data Quality:} Expectativas matemáticas rigurosas desde la base de datos (no-nulos, unicidad, límites numéricos).
+    \end{itemize}
+\end{frame}
+
+\begin{frame}[fragile]{Código: dbt Expectations}
+\begin{Verbatim}[fontsize=\footnotesize]
+models:
+  - name: fct_sales
+    columns:
+      - name: transaction_id
+        tests:
+          - unique
+          - not_null
+      - name: amount_usd
+        tests:
+          - dbt_expectations.expect_column_values_to_be_between:
+              min_value: 0.01
+\end{Verbatim}
+\end{frame}
+
+\begin{frame}{Orquestación y Resiliencia (Apache Airflow)}
+    \begin{itemize}
+        \item \textbf{Circuit Breaker Estricto:} Dependencias lineales que protegen la Capa Gold.
+        \item \textbf{Validación asíncrona:} FileSensor detiene el pipeline si la Capa Silver falla o tarda demasiado.
+    \end{itemize}
+    \vspace{0.5cm}
+    \begin{center}
+    \resizebox{0.8\textwidth}{!}{
+        \begin{tikzpicture}[
+            node distance=1cm and 1cm,
+            task/.style={rectangle, draw, fill=orange!20, rounded corners, text width=2.2cm, align=center, minimum height=0.8cm},
+            arrow/.style={-{Stealth[scale=1]}, thick}
+        ]
+            \node[task] (t1) {1. Beam ETL};
+            \node[task, right=of t1] (t2) {2. FileSensor};
+            \node[task, right=of t2] (t3) {3. dbt run};
+            
+            \draw[arrow] (t1) -- (t2);
+            \draw[arrow] (t2) -- (t3);
+        \end{tikzpicture}
+    }
+    \end{center}
+\end{frame}
+
+\begin{frame}[fragile]{Código: Airflow FileSensor}
+\begin{Verbatim}[fontsize=\footnotesize]
+sensor_silver_data = FileSensor(
+    task_id='sensor_silver_data',
+    filepath=silver_layer_path,
+    fs_conn_id='fs_default',
+    poke_interval=30,
+    timeout=600  # Falla automatica despues de 10 min
+)
+\end{Verbatim}
+\end{frame}
+
+\begin{frame}{Las 4 Preguntas de Beam}
+    \begin{itemize}
+        \item \textbf{What are you computing?} Limpieza de anomalías y unión transaccional (ventas e historiales).
+        \item \textbf{Where in event time?} Ventanas Globales (Global Windows), procesando en lotes acotados.
+        \item \textbf{When in processing time?} Orquestado al finalizar el día de operaciones (Batch end-of-day trigger).
+        \item \textbf{How do refinements relate?} \texttt{CoGroupByKey} para iterar y agrupar flujos inconexos y anidarlos en arrays estructurales.
+    \end{itemize}
+\end{frame}
+
+\end{document}

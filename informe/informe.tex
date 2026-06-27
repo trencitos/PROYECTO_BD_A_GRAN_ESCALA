@@ -1,0 +1,136 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[spanish]{babel}
+\usepackage{geometry}
+\geometry{top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm}
+\usepackage{graphicx} 
+\usepackage{tikz}
+\usetikzlibrary{shapes.geometric, arrows.meta, positioning, fit, backgrounds, babel}
+\usepackage{float}
+\usepackage{xcolor}
+
+% Definición de paleta de colores para el diagrama
+\definecolor{colorSource}{HTML}{D5E8D4} % Verde suave
+\definecolor{colorBeam}{HTML}{FFE6CC}   % Naranja suave
+\definecolor{colorError}{HTML}{F8CECC}  % Rojo suave
+\definecolor{colorSilver}{HTML}{E1D5E7} % Morado suave
+\definecolor{colorGold}{HTML}{FFF2CC}   % Amarillo suave
+\definecolor{colorAirflow}{HTML}{DAE8FC} % Azul suave
+
+\title{Proyecto Final: Sistema de Consolidación de Ventas Omnicanal Super-Market}
+\author{Geraldine Cornejo, Javiera Barrales, Rodrigo Flores}
+\date{Junio 2026}
+
+\begin{document}
+
+\maketitle
+
+\section{Introducción al Proyecto}
+
+La corporación multinacional Super-Market enfrenta un desafío crítico de fragmentación de datos: las operaciones de Santiago, Lima y Buenos Aires generan información local en archivos CSV que presentan inconsistencias de formato, anomalías financieras y disparidad en las monedas. 
+
+Para proveer un repositorio de confianza al equipo de Data Science, implementamos una arquitectura Medallion. Esta solución centraliza y denormaliza las transacciones mediante Apache Beam (Capa Silver en Parquet), para luego modelar y estandarizar métricas financieras a USD mediante dbt en PostgreSQL (Capa Gold), bajo la orquestación resiliente de Apache Airflow.
+
+\section{Blueprint de Arquitectura y Flujo de Datos}
+
+A continuación, se presenta el Diagrama de Flujo de Datos (DFD) que ilustra el ciclo de vida de la información de forma segmentada.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+    node distance=1.2cm and 1cm,
+    base/.style={rectangle, rounded corners, draw=black, thick, align=center, font=\scriptsize, inner sep=1ex},
+    source/.style={base, fill=colorSource, text width=2.4cm},
+    beam/.style={base, fill=colorBeam, text width=2.6cm},
+    error/.style={base, fill=colorError, text width=2.4cm},
+    storage/.style={cylinder, shape border rotate=90, draw=black, thick, aspect=0.25, align=center, font=\scriptsize, inner sep=1ex},
+    silver/.style={storage, fill=colorSilver, text width=2.6cm},
+    gold/.style={storage, fill=colorGold, text width=2.6cm},
+    airflow/.style={base, fill=colorAirflow, text width=12cm, font=\bfseries\small},
+    flecha/.style={thick, ->, >=stealth},
+    flecha_texto/.style={font=\tiny, align=center}
+]
+
+% Orquestación
+\node (airflow) [airflow] {Apache Airflow (DAG, Dependencias y Retries)};
+
+% Capa de Origen (Sources)
+\node (sales) [source, below left=1.2cm and -2cm of airflow] {sales\_data.csv\\(Ventas)};
+\node (logs) [source, below right=1.2cm and -2cm of airflow] {status\_logs.csv\\(Historial)};
+
+% Procesamiento (Apache Beam)
+\node (beam_read) [beam, below=1.8cm of airflow] {Lectura Asíncrona\\(Multithreading)};
+\node (join) [beam, below=1cm of beam_read] {Join: CoGroupByKey\\(Por transaction\_id)};
+\node (rejected) [error, right=1.5cm of join] {Side Output\\(rejected\_sales.csv)};
+
+% Capa de Persistencia (Silver)
+\node (parquet) [silver, below=1.5cm of join] {Data Lake\\(Parquet Anidado)};
+
+% Capa de Transformación (dbt) y Servicio (Gold)
+\node (dbt) [beam, below=1.5cm of parquet] {dbt run \& test\\(Filtros y Conversión)};
+\node (postgres) [gold, below=1.5cm of dbt] {PostgreSQL\\(fct\_sales\_daily y KPIs)};
+
+% Conexiones Sources -> Beam
+\draw [flecha] (sales) |- node[flecha_texto, above, pos=0.75] {Validación} (beam_read);
+\draw [flecha] (logs) |- node[flecha_texto, above, pos=0.75] {Validación} (beam_read);
+
+% Conexiones Beam interno
+\draw [flecha] (beam_read) -- (join);
+\draw [flecha] (join) -- node[flecha_texto, above] {Anomalías} (rejected);
+
+% Conexiones Beam -> Silver
+\draw [flecha] (join) -- node[flecha_texto, right] {PyArrow Schema} (parquet);
+
+% Conexiones Silver -> dbt -> Gold
+\draw [flecha] (parquet) -- (dbt);
+\draw [flecha] (dbt) -- (postgres);
+
+% Conexiones Airflow de control (Líneas punteadas)
+\draw [dashed, ->, thick, color=blue!70] (airflow.south west) -- ++(0,-0.8) -| node[flecha_texto, left, pos=0.9] {Dispara Task 1} (beam_read.north west);
+\draw [dashed, ->, thick, color=blue!70] (airflow.south east) -- ++(0,-0.8) -| node[flecha_texto, right, pos=0.9] {Dispara Task 3} (dbt.north east);
+
+% Fondos agrupadores con etiquetas sutiles (\tiny y gray!80)
+\begin{scope}[on background layer]
+    \node [draw=gray, dashed, thick, fill=gray!5, fit=(sales)(logs), inner sep=0.4cm, label={[font=\tiny, text=gray!80]above left:Capa de Origen (Sources)}] {};
+    \node [draw=gray, dashed, thick, fill=gray!5, fit=(beam_read)(join)(rejected), inner sep=0.4cm, label={[font=\tiny, text=gray!80]above left:Procesamiento (Apache Beam)}] {};
+    \node [draw=gray, dashed, thick, fill=gray!5, fit=(parquet), inner sep=0.4cm, label={[font=\tiny, text=gray!80]above left:Capa de Persistencia (Silver)}] {};
+    \node [draw=gray, dashed, thick, fill=gray!5, fit=(dbt), inner sep=0.4cm, label={[font=\tiny, text=gray!80]above left:Capa de Transformación (dbt)}] {};
+    \node [draw=gray, dashed, thick, fill=gray!5, fit=(postgres), inner sep=0.4cm, label={[font=\tiny, text=gray!80]above left:Capa de Servicio (Gold Serving)}] {};
+\end{scope}
+
+\end{tikzpicture}
+\caption{Diagrama de Arquitectura segmentado por Capas Técnicas}
+\label{fig:dfd}
+\end{figure}
+
+\clearpage
+
+\section{Análisis Técnico y Decisiones Arquitectónicas}
+
+\subsection{1. Contratos de Esquema y Calidad}
+Para proteger la integridad del dato desde su origen débil (CSV) hasta la capa analítica, definimos contratos estrictos. En Apache Beam, la estructura denormalizada se serializa utilizando el objeto \texttt{SILVER\_SCHEMA} de PyArrow. Al pasarlo a la función \texttt{WriteToParquet}, PyArrow actúa como un guardián (gatekeeper) que rechaza cualquier escritura que no cumpla con los tipos y jerarquías anidadas. 
+
+En la Capa Gold, la calidad se garantiza matemáticamente mediante \texttt{schema.yml} en dbt. Aplicamos pruebas genéricas (\texttt{unique} y \texttt{not\_null} sobre \texttt{transaction\_id}) y usamos el paquete \texttt{dbt\_expectations} para forzar que el \texttt{amount\_usd} tenga un límite rígido de \texttt{min\_value: 0.01}, asegurando que ninguna tasa fraccionaria anómala afecte los KPIs del negocio.
+
+\subsection{2. Orquestación del DAG}
+El grafo de Airflow se configuró secuencialmente: \texttt{Beam $\rightarrow$ Sensor $\rightarrow$ dbt}. Apoyándonos en la regla \texttt{all\_success}, garantizamos que dbt se detenga por completo si los pasos anteriores fallan. 
+Para aumentar la resiliencia, configuramos la tarea con 2 reintentos (\texttt{retries}) y un \texttt{retry\_delay} de 5 minutos. Además, implementamos un \texttt{FileSensor} que hace *poking* cada 30 segundos verificando la creación exitosa del Parquet en la Capa Silver. Si transcurren 600 segundos (10 minutos), el sensor lanza un timeout y aborta el pipeline, evitando que dbt procese datos corruptos o incompletos.
+
+\subsection{3. Matriz de Resiliencia y Procesamiento Paralelo}
+Para la ingesta inicial, aunque Beam divide bloques nativamente, cumplimos el requerimiento técnico desarrollando una clase \texttt{ParallelCSVReaderFn}. Esta función utiliza colas (\texttt{Queue}) compartidas y levanta 4 hilos (\texttt{threading.Thread}) protegidos por un \texttt{threading.Lock()}, logrando parsear el archivo línea por línea en memoria de forma ultra eficiente.
+
+Sobre esta lectura paralela, aplicamos las reglas de validación: las ventas exigen 5 columnas y un \texttt{amount} estricto $>0$ (casteado a float); los logs exigen 3 columnas y un dominio cerrado (\texttt{CREATED, PENDING, COMPLETED, REFUNDED}). Si una regla falla, el registro emite un \texttt{beam.pvalue.TaggedOutput('rejected', ...)}. Posteriormente, unificamos estos flujos de error con \texttt{beam.Flatten()} y los enviamos al archivo \texttt{rejected\_sales.csv} para auditoría, manteniendo intacto el pipeline principal.
+
+\subsection{4. Sinking Strategy e Idempotencia}
+El uso de Apache Parquet permite compresión masiva y aislamiento por columnas. Para asegurar la idempotencia del pipeline en Beam, configuramos la escritura \texttt{WriteToParquet} sin el flag de *append*, forzando una sobreescritura limpia en cada ejecución diaria y estampando la metadata \texttt{processed\_at}. 
+En paralelo, la idempotencia en dbt (Capa Gold) se garantizó definiendo explícitamente \texttt{materialized='table'} en \texttt{fct\_sales.sql}, lo que instruye a PostgreSQL a eliminar y recrear la tabla completa en cada corrida, eliminando el riesgo de duplicidad por *upserts* fallidos.
+
+\subsection{5. El Modelo de las 4 Preguntas de Beam}
+\begin{itemize}
+    \item \textbf{What (Qué se calcula):} Join de ventas e histórico de estados, denormalizándolos mediante tipado PyArrow estricto, aislando los datos anómalos.
+    \item \textbf{Where (Dónde en el tiempo):} Uso de Ventanas Globales para el procesamiento Batch sobre datos limitados.
+    \item \textbf{When (Cuándo se procesa):} Al finalizar el cierre contable diario.
+    \item \textbf{How (Cómo se relacionan):} Usamos \texttt{CoGroupByKey} para agrupar las streams por \texttt{transaction\_id}. Luego, la función \texttt{BuildNestedRecordFn} itera sobre estos agrupamientos, parseando las fechas string a objetos \texttt{datetime} UTC y anexándolos como diccionarios dentro de la lista \texttt{status\_history}.
+\end{itemize}
+
+\end{document}
