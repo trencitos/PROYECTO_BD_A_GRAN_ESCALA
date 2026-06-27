@@ -1,6 +1,7 @@
 \documentclass[11pt,a4paper]{article}
 \usepackage[utf8]{inputenc}
 \usepackage[spanish]{babel}
+\usepackage{hyperref}
 \usepackage{geometry}
 \geometry{top=2.5cm, bottom=2.5cm, left=2.5cm, right=2.5cm}
 \usepackage{graphicx} 
@@ -107,30 +108,34 @@ A continuación, se presenta el Diagrama de Flujo de Datos (DFD) que ilustra el 
 
 \section{Análisis Técnico y Decisiones Arquitectónicas}
 
-\subsection{1. Contratos de Esquema y Calidad}
+\subsection{Contratos de Esquema y Calidad}
 Para proteger la integridad del dato desde su origen débil (CSV) hasta la capa analítica, definimos contratos estrictos. En Apache Beam, la estructura denormalizada se serializa utilizando el objeto \texttt{SILVER\_SCHEMA} de PyArrow. Al pasarlo a la función \texttt{WriteToParquet}, PyArrow actúa como un guardián (gatekeeper) que rechaza cualquier escritura que no cumpla con los tipos y jerarquías anidadas. 
 
 En la Capa Gold, la calidad se garantiza matemáticamente mediante \texttt{schema.yml} en dbt. Aplicamos pruebas genéricas (\texttt{unique} y \texttt{not\_null} sobre \texttt{transaction\_id}) y usamos el paquete \texttt{dbt\_expectations} para forzar que el \texttt{amount\_usd} tenga un límite rígido de \texttt{min\_value: 0.01}, asegurando que ninguna tasa fraccionaria anómala afecte los KPIs del negocio.
 
-\subsection{2. Orquestación del DAG}
+\subsection{Orquestación del DAG}
 El grafo de Airflow se configuró secuencialmente: \texttt{Beam $\rightarrow$ Sensor $\rightarrow$ dbt}. Apoyándonos en la regla \texttt{all\_success}, garantizamos que dbt se detenga por completo si los pasos anteriores fallan. 
 Para aumentar la resiliencia, configuramos la tarea con 2 reintentos (\texttt{retries}) y un \texttt{retry\_delay} de 5 minutos. Además, implementamos un \texttt{FileSensor} que hace *poking* cada 30 segundos verificando la creación exitosa del Parquet en la Capa Silver. Si transcurren 600 segundos (10 minutos), el sensor lanza un timeout y aborta el pipeline, evitando que dbt procese datos corruptos o incompletos.
 
-\subsection{3. Matriz de Resiliencia y Procesamiento Paralelo}
+\subsection{Matriz de Resiliencia y Procesamiento Paralelo}
 Para la ingesta inicial, aunque Beam divide bloques nativamente, cumplimos el requerimiento técnico desarrollando una clase \texttt{ParallelCSVReaderFn}. Esta función utiliza colas (\texttt{Queue}) compartidas y levanta 4 hilos (\texttt{threading.Thread}) protegidos por un \texttt{threading.Lock()}, logrando parsear el archivo línea por línea en memoria de forma ultra eficiente.
 
 Sobre esta lectura paralela, aplicamos las reglas de validación: las ventas exigen 5 columnas y un \texttt{amount} estricto $>0$ (casteado a float); los logs exigen 3 columnas y un dominio cerrado (\texttt{CREATED, PENDING, COMPLETED, REFUNDED}). Si una regla falla, el registro emite un \texttt{beam.pvalue.TaggedOutput('rejected', ...)}. Posteriormente, unificamos estos flujos de error con \texttt{beam.Flatten()} y los enviamos al archivo \texttt{rejected\_sales.csv} para auditoría, manteniendo intacto el pipeline principal.
 
-\subsection{4. Sinking Strategy e Idempotencia}
+\subsection{Sinking Strategy e Idempotencia}
 El uso de Apache Parquet permite compresión masiva y aislamiento por columnas. Para asegurar la idempotencia del pipeline en Beam, configuramos la escritura \texttt{WriteToParquet} sin el flag de *append*, forzando una sobreescritura limpia en cada ejecución diaria y estampando la metadata \texttt{processed\_at}. 
 En paralelo, la idempotencia en dbt (Capa Gold) se garantizó definiendo explícitamente \texttt{materialized='table'} en \texttt{fct\_sales.sql}, lo que instruye a PostgreSQL a eliminar y recrear la tabla completa en cada corrida, eliminando el riesgo de duplicidad por *upserts* fallidos.
 
-\subsection{5. El Modelo de las 4 Preguntas de Beam}
+\subsection{El Modelo de las 4 Preguntas de Beam}
 \begin{itemize}
     \item \textbf{What (Qué se calcula):} Join de ventas e histórico de estados, denormalizándolos mediante tipado PyArrow estricto, aislando los datos anómalos.
     \item \textbf{Where (Dónde en el tiempo):} Uso de Ventanas Globales para el procesamiento Batch sobre datos limitados.
     \item \textbf{When (Cuándo se procesa):} Al finalizar el cierre contable diario.
     \item \textbf{How (Cómo se relacionan):} Usamos \texttt{CoGroupByKey} para agrupar las streams por \texttt{transaction\_id}. Luego, la función \texttt{BuildNestedRecordFn} itera sobre estos agrupamientos, parseando las fechas string a objetos \texttt{datetime} UTC y anexándolos como diccionarios dentro de la lista \texttt{status\_history}.
 \end{itemize}
+
+\subsection{Repositorio}
+Nuestra solución se encuentra en:
+\href{https://github.com/trencitos/PROYECTO_BD_A_GRAN_ESCALA.git}{Ir a GitHub}
 
 \end{document}
