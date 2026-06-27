@@ -1,43 +1,83 @@
+"""
+DAG definition for Global Mart Consolidation Pipeline.
+"""
+from datetime import datetime, timedelta
+import os
+from typing import Dict, Any
+
 from airflow import DAG
 from airflow.operators.bash import BashOperator
 from airflow.sensors.filesystem import FileSensor
-from datetime import datetime, timedelta
+from dotenv import load_dotenv
 
-default_args = {
-    'owner': 'data_engineer',
-    'depends_on_past': False,
-    'start_date': datetime(2026, 6, 20),
-    'retries': 2, # Resiliencia: Reintentos [cite: 97]
-    'retry_delay': timedelta(minutes=5),
-}
+load_dotenv()
 
-with DAG(
-    'global_mart_consolidation_pipeline',
-    default_args=default_args,
-    schedule_interval='@daily',
-    catchup=False
-) as dag:
+def get_default_args() -> Dict[str, Any]:
+    """
+    Returns the default arguments for the Airflow DAG.
 
-    # Task 1: Ejecutar Apache Beam [cite: 92]
-    extract_and_transform_silver = BashOperator(
-        task_id='extract_and_transform_silver',
-        bash_command='python /path/to/tu/repo/beam_pipeline.py' 
-    )
+    Returns:
+        Dict[str, Any]: Default configuration arguments.
+    """
+    return {
+        'owner': 'data_engineer',
+        'depends_on_past': False,
+        'start_date': datetime(2026, 6, 20),
+        'retries': 2,
+        'retry_delay': timedelta(minutes=5),
+    }
 
-    # Task 2: Sensor para verificar el archivo Parquet (Opcional pero solicitado) [cite: 94]
-    sensor_silver_data = FileSensor(
-        task_id='sensor_silver_data',
-        filepath='/path/to/tu/repo/silver_layer/',
-        fs_conn_id='fs_default',
-        poke_interval=30,
-        timeout=600
-    )
+def create_dag() -> DAG:
+    """
+    Creates and configures the DAG for the consolidation pipeline.
 
-    # Task 3: Ejecutar dbt run y dbt test [cite: 95]
-    load_and_model_gold = BashOperator(
-        task_id='load_and_model_gold',
-        bash_command='cd /path/to/tu/repo/dbt_project && dbt run && dbt test'
-    )
+    Returns:
+        DAG: The configured Airflow DAG object.
+    """
+    project_root = os.getenv('PROJECT_ROOT', '/tmp')
+    beam_pipeline_path = os.getenv('BEAM_PIPELINE_PATH', f"{project_root}/beam/beam_pipeline.py")
+    silver_layer_path = os.getenv('SILVER_LAYER_PATH', f"{project_root}/silver_layer/")
+    dbt_project_path = os.getenv('DBT_PROJECT_PATH', f"{project_root}/dbt_project")
+    load_script_path = os.getenv('LOAD_SCRIPT_PATH', f"{project_root}/beam/load_to_postgres.py")
 
-    # Definición de la jerarquía (Beam >> dbt) [cite: 97]
-    extract_and_transform_silver >> sensor_silver_data >> load_and_model_gold
+    with DAG(
+        'global_mart_consolidation_pipeline',
+        default_args=get_default_args(),
+        schedule_interval='@daily',
+        catchup=False,
+        doc_md=__doc__
+    ) as dag:
+
+        env_vars = os.environ.copy()
+
+        extract_and_transform_silver = BashOperator(
+            task_id='extract_and_transform_silver',
+            bash_command=f'python {beam_pipeline_path}',
+            env=env_vars
+        )
+
+        sensor_silver_data = FileSensor(
+            task_id='sensor_silver_data',
+            filepath=silver_layer_path,
+            fs_conn_id='fs_default',
+            poke_interval=30,
+            timeout=600
+        )
+
+        load_parquet_to_postgres = BashOperator(
+            task_id='load_parquet_to_postgres',
+            bash_command=f'python {load_script_path}',
+            env=env_vars
+        )
+
+        load_and_model_gold = BashOperator(
+            task_id='load_and_model_gold',
+            bash_command=f'cd {dbt_project_path} && dbt deps && dbt seed --profiles-dir . && dbt run --profiles-dir . && dbt test --profiles-dir .',
+            env=env_vars
+        )
+
+        extract_and_transform_silver >> sensor_silver_data >> load_parquet_to_postgres >> load_and_model_gold
+
+    return dag
+
+dag = create_dag()
