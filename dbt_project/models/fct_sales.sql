@@ -16,22 +16,30 @@ status_times AS (
         MAX(CASE WHEN status = 'REFUNDED' THEN 1 ELSE 0 END) as is_refunded
     FROM sales, json_to_recordset(sales.status_history) as sh(status text, date timestamp)
     GROUP BY transaction_id
+),
+base_fct AS (
+    SELECT 
+        s.transaction_id,
+        s.store_id,
+        s.amount,
+        s.currency,
+        (s.amount / e.rate_to_usd) AS amount_usd,
+        st.created_at,
+        st.completed_at,
+        EXTRACT(EPOCH FROM (st.completed_at - st.created_at))/3600 AS conversion_time_hours,
+        st.is_refunded,
+        s.is_active_transaction,
+        s.pipeline_processed_at,
+        s.batch_id,
+        CURRENT_TIMESTAMP AS dbt_updated_at
+    FROM sales s
+    LEFT JOIN exchange_rates e ON s.currency = e.currency
+    LEFT JOIN status_times st ON s.transaction_id = st.transaction_id
 )
 
 SELECT 
-    s.transaction_id,
-    s.store_id,
-    s.amount,
-    s.currency,
-    (s.amount / e.rate_to_usd) AS amount_usd,
-    st.created_at,
-    st.completed_at,
-    EXTRACT(EPOCH FROM (st.completed_at - st.created_at))/3600 AS conversion_time_hours,
-    st.is_refunded,
-    s.is_active_transaction,
-    s.pipeline_processed_at,
-    s.batch_id,
-    CURRENT_TIMESTAMP AS dbt_updated_at
-FROM sales s
-LEFT JOIN exchange_rates e ON s.currency = e.currency
-LEFT JOIN status_times st ON s.transaction_id = st.transaction_id
+    *,
+    CASE WHEN is_refunded = 1 THEN 0 ELSE amount_usd END AS net_revenue_usd,
+    CASE WHEN conversion_time_hours < 1 THEN 'Fast' WHEN conversion_time_hours <= 24 THEN 'Normal' ELSE 'Delayed' END AS fulfillment_category,
+    CASE WHEN amount_usd > 100 THEN 'High Value' ELSE 'Low Value' END AS ticket_size
+FROM base_fct
