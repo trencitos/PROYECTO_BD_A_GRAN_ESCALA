@@ -1,0 +1,39 @@
+# Environments and Secrets
+.env
+.venv/
+env/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# dbt
+target/
+dbt_packages/
+logs/
+dbt.log
+*.pyc
+dbt_project/.user.yml
+
+# Pipeline Generated Data
+silver_layer/
+rejected_sales/
+*.parquet
+
+# LaTeX Auxiliary Files (Safe to ignore, keeping .tex and .pdf in informe/ and presentacion/)
+*.aux
+*.bbl
+*.blg
+*.fls
+*.log
+*.fdb_latexmk
+*.out
+*.toc
+*.synctex.gz
+*.nav
+*.snm
+*.vrb
+
+# OS / System
+.DS_Store
+Thumbs.db
