@@ -34,11 +34,11 @@ def create_dag() -> DAG:
     Returns:
         DAG: The configured Airflow DAG object.
     """
-    project_root = os.getenv('PROJECT_ROOT', '/tmp')
-    beam_pipeline_path = os.getenv('BEAM_PIPELINE_PATH', f"{project_root}/beam/beam_pipeline.py")
-    silver_layer_path = os.getenv('SILVER_LAYER_PATH', f"{project_root}/silver_layer/")
-    dbt_project_path = os.getenv('DBT_PROJECT_PATH', f"{project_root}/dbt_project")
-    load_script_path = os.getenv('LOAD_SCRIPT_PATH', f"{project_root}/beam/load_to_postgres.py")
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+    beam_pipeline_path = os.path.join(project_root, 'beam', 'beam_pipeline.py')
+    silver_layer_path = os.path.join(project_root, 'silver_layer/')
+    dbt_project_path = os.path.join(project_root, 'dbt_project')
+    load_script_path = os.path.join(project_root, 'beam', 'load_to_postgres.py')
 
     with DAG(
         'global_mart_consolidation_pipeline',

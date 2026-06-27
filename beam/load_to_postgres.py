@@ -9,7 +9,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 def main():
-    project_root = os.getenv('PROJECT_ROOT', '/opt/airflow')
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     silver_layer = os.path.join(project_root, 'silver_layer')
     
     # Find the parquet file
