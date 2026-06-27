@@ -1,16 +1,59 @@
-version: '3.8'
 services:
   postgres_gold:
     image: postgres:15
     container_name: gold_layer_db
+    env_file:
+      - .env
     environment:
-      POSTGRES_USER: admin
-      POSTGRES_PASSWORD: adminpassword
-      POSTGRES_DB: supermarket_db
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: ${DB_NAME}
     ports:
-      - "5432:5432"
+      - "${DB_PORT}:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
+
+  airflow-webserver:
+    build: .
+    container_name: airflow-webserver
+    depends_on:
+      - postgres_gold
+    env_file:
+      - .env
+    environment:
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/${DB_NAME}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./beam:/opt/airflow/beam
+      - ./dbt_project:/opt/airflow/dbt_project
+      - ./data:/opt/airflow/data
+      - ./silver_layer:/opt/airflow/silver_layer
+      - ./rejected_sales:/opt/airflow/rejected_sales
+      - ./.env:/opt/airflow/.env
+    ports:
+      - "8080:8080"
+    command: webserver
+
+  airflow-scheduler:
+    build: .
+    container_name: airflow-scheduler
+    depends_on:
+      - postgres_gold
+    env_file:
+      - .env
+    environment:
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://${DB_USER}:${DB_PASSWORD}@${DB_HOST}:5432/${DB_NAME}
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - ./beam:/opt/airflow/beam
+      - ./dbt_project:/opt/airflow/dbt_project
+      - ./data:/opt/airflow/data
+      - ./silver_layer:/opt/airflow/silver_layer
+      - ./rejected_sales:/opt/airflow/rejected_sales
+      - ./.env:/opt/airflow/.env
+    command: scheduler
 
 volumes:
   pgdata:
