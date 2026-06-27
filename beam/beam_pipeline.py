@@ -2,8 +2,6 @@
 Apache Beam Pipeline for Global Mart Data Consolidation.
 """
 import os
-import threading
-from queue import Queue
 from typing import Dict, Any, List, Tuple, Iterable
 from datetime import datetime, timezone
 from dotenv import load_dotenv
@@ -31,54 +29,6 @@ SILVER_SCHEMA = pa.schema([
         ('is_active', pa.bool_())
     ]))
 ])
-
-class ParallelCSVReaderFn(beam.DoFn):
-    """
-    Reads a CSV file in parallel using Python threading and locks.
-    """
-
-    def process(self, file_path: str) -> Iterable[str]:
-        """
-        Processes a file path, reads it using threads, and yields lines.
-
-        Args:
-            file_path (str): The absolute path to the CSV file.
-
-        Yields:
-            str: A single line from the CSV file.
-        """
-        file_queue: Queue = Queue()
-        results: Queue = Queue()
-        lock = threading.Lock()
-
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                next(f) 
-                for line in f:
-                    file_queue.put(line.strip())
-        except FileNotFoundError:
-            return
-
-        def worker() -> None:
-            """Worker thread function to process lines."""
-            while not file_queue.empty():
-                with lock:
-                    if file_queue.empty():
-                        break
-                    line = file_queue.get()
-                results.put(line)
-
-        threads: List[threading.Thread] = []
-        for _ in range(4):
-            t = threading.Thread(target=worker)
-            t.start()
-            threads.append(t)
-
-        for t in threads:
-            t.join()
-
-        while not results.empty():
-            yield results.get()
 
 class ValidateSalesFn(beam.DoFn):
     """
@@ -210,8 +160,8 @@ def run_pipeline() -> None:
     Configures and runs the Apache Beam pipeline.
     """
     options = PipelineOptions()
-    project_root = os.getenv('PROJECT_ROOT', '/tmp')
-    silver_layer = os.getenv('SILVER_LAYER_PATH', f"{project_root}/silver_layer")
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+    silver_layer = os.path.join(project_root, 'silver_layer')
     rejected_path = os.path.join(project_root, 'rejected_sales')
     sales_file = os.path.join(project_root, 'data', 'sales_data.csv')
     logs_file = os.path.join(project_root, 'data', 'status_logs.csv')
@@ -220,13 +170,11 @@ def run_pipeline() -> None:
         
         sales_raw = (
             p 
-            | 'Create Sales File Path' >> beam.Create([sales_file])
-            | 'Read Sales Parallel' >> beam.ParDo(ParallelCSVReaderFn())
+            | 'Read Sales Parallely' >> beam.io.ReadFromText(sales_file, skip_header_lines=1)
         )
         logs_raw = (
             p 
-            | 'Create Logs File Path' >> beam.Create([logs_file])
-            | 'Read Logs Parallel' >> beam.ParDo(ParallelCSVReaderFn())
+            | 'Read Logs Parallely' >> beam.io.ReadFromText(logs_file, skip_header_lines=1)
         )
         
         sales_validated = sales_raw | 'Validate Sales' >> beam.ParDo(ValidateSalesFn()).with_outputs('rejected', main='valid')
